@@ -1,36 +1,124 @@
 <!DOCTYPE html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta
-            name="viewport"
-            content="width=device-width, initial-scale=1.0"
-        >
-        <title>Document</title>
-        <link rel="stylesheet" href="styles.css">
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
-    </head>
-    <body>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebSocket Chat</title>
 
-        <div class="chat-container">
-            <div
-                class="chat-box"
-                id="chat-box"
-            >
-                <!-- Tin nhắn sẽ được hiển thị ở đây -->
-            </div>
-            <div class="input-container">
-                <input
-                    type="text"
-                    id="message-input"
-                    placeholder="Nhập tin nhắn..."
-                >
-                <button id="send-button">
-                    <i class="fa-regular fa-paper-plane"></i>
-                </button>
-            </div>
+    <!-- Font Awesome for icons -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css"
+    />
+
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+
+  <body>
+    <!-- App wrapper -->
+    <div class="app">
+      <!-- Header -->
+      <header class="chat-header" role="banner">
+        <div class="header-left">
+          <h1 class="header-title">
+            <i class="fa-solid fa-comments" aria-hidden="true"></i>
+            WebSocket Chat
+          </h1>
+
+          <!-- Connection status badge -->
+          <div
+            id="connection-status"
+            class="conn-status conn-status--disconnected"
+            role="status"
+            aria-live="polite"
+            aria-label="Trạng thái kết nối"
+          >
+            <span class="conn-status__dot" aria-hidden="true"></span>
+            <span id="conn-status-text" class="conn-status__text">Đã ngắt kết nối</span>
+          </div>
         </div>
 
-        <script src="app.js"></script>
-    </body>
+        <div class="header-right">
+          <!-- Dark mode toggle -->
+          <button
+            id="theme-toggle"
+            class="theme-toggle"
+            aria-label="Chuyển chế độ sáng/tối"
+            title="Chuyển chế độ sáng/tối"
+          >
+            <i id="theme-icon" class="fa-solid fa-moon" aria-hidden="true"></i>
+          </button>
+        </div>
+      </header>
+
+      <!-- Chat area -->
+      <main class="chat-main" role="main">
+        <!-- Loading overlay (shown before first message or on reconnect) -->
+        <div
+          id="loading-overlay"
+          class="loading-overlay"
+          aria-hidden="true"
+        >
+          <div class="loading-spinner" aria-label="Đang kết nối...">
+            <i class="fa-solid fa-circle-notch fa-spin"></i>
+          </div>
+          <p class="loading-text">Đang kết nối...</p>
+        </div>
+
+        <!-- Error banner (hidden by default) -->
+        <div
+          id="error-banner"
+          class="error-banner"
+          role="alert"
+          aria-live="assertive"
+          hidden
+        >
+          <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+          <span id="error-message">Đã xảy ra lỗi.</span>
+          <button
+            id="error-dismiss"
+            class="error-dismiss"
+            aria-label="Đóng thông báo lỗi"
+          >
+            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+          </button>
+        </div>
+
+        <!-- Chat messages -->
+        <div
+          class="chat-box"
+          id="chat-box"
+          role="log"
+          aria-label="Tin nhắn"
+          aria-live="polite"
+        ></div>
+      </main>
+
+      <!-- Input area -->
+      <footer class="input-area" role="contentinfo">
+        <div class="input-container">
+          <label for="message-input" class="sr-only">Nhập tin nhắn</label>
+          <input
+            type="text"
+            id="message-input"
+            class="message-input"
+            placeholder="Nhập tin nhắn..."
+            autocomplete="off"
+            maxlength="2000"
+            aria-label="Tin nhắn mới"
+          />
+          <button
+            id="send-button"
+            class="send-button"
+            aria-label="Gửi tin nhắn"
+            title="Gửi"
+          >
+            <i class="fa-regular fa-paper-plane" aria-hidden="true"></i>
+          </button>
+        </div>
+      </footer>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
 </html>

@@ -1,15 +1,26 @@
 {
-  "name": "server",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "websocket-chat-server",
+  "version": "1.1.0",
+  "description": "WebSocket chat server with heartbeat, client limits, and graceful shutdown",
+  "main": "app.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node app.js",
+    "dev": "node --watch app.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
-  "keywords": [],
+  "keywords": [
+    "websocket",
+    "chat",
+    "ws",
+    "node"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.9"
   }
 }

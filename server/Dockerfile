@@ -1,17 +1,20 @@
-# Dockerfile cho Backend
-FROM node:14
+# Dockerfile for the WebSocket Server
+FROM node:22-slim
 
-# Thiết lập thư mục làm việc
+# Set working directory
 WORKDIR /app
 
-# Sao chép mã nguồn vào container
+# Copy dependency manifest first to leverage Docker layer caching
+COPY package.json package-lock.json* ./
+
+# Install dependencies
+RUN npm ci --omit=dev || npm install --omit=dev
+
+# Copy application source
 COPY . .
 
-# Cài đặt các phụ thuộc
-RUN npm install
-
-# Mở cổng cho server
+# Expose the WebSocket port
 EXPOSE 8080
 
-# Lệnh để chạy server
+# Run the server
 CMD ["node", "app.js"]

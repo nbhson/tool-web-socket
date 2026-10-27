@@ -1,98 +1,118 @@
-# Web Socket
+# WebSocket Chat Demo
 
-## Start Local
+A minimal real-time chat demo using raw WebSocket (`ws` library) on Node.js, with a plain HTML/CSS/JS frontend. Designed as a learning reference, not a production system.
 
-FE
-- cd ui
-- Run with live server on index.html
+---
 
-BE
-- cd server
-- run npm install
-- run node app.js
+## Features
 
-## Setup with Docker
+- **Broadcast** — messages are relayed to all connected clients.
+- **Heartbeat / ping-pong** — server detects and cleans up stale connections.
+- **Client limit** — configurable maximum simultaneous connections (default: 50).
+- **Graceful shutdown** — responds to `SIGTERM`/`SIGINT` cleanly.
+- **Dark mode** — toggle between light and dark themes.
+- **Connection status indicator** — live feedback on WebSocket state.
+- **Auto-reconnect** — client retries with exponential backoff on disconnect.
+- **Responsive UI** — works on mobile and desktop.
 
-#### Dockerfile cho Backend
+---
 
-Trong thư mục gốc của Server, tạo file Dockerfile:
+## Quick Start (Local)
 
-```bash
-# Dockerfile cho Backend
-FROM node:14
-
-# Thiết lập thư mục làm việc
-WORKDIR /app
-
-# Sao chép mã nguồn vào container
-COPY . .
-
-# Cài đặt các phụ thuộc
-RUN npm install
-
-# Mở cổng cho server
-EXPOSE 8080
-
-# Lệnh để chạy server
-CMD ["node", "server.js"]
-```
-
-
-#### Dockerfile cho UI
-
-Trong thư mục gốc của UI, tạo file Dockerfile:
+### Frontend
 
 ```bash
-# Dockerfile cho Frontend
-FROM node:14 AS build
-
-# Thiết lập thư mục làm việc
-WORKDIR /app
-
-# Sao chép mã nguồn vào container
-COPY . .
-
-# Cài đặt các phụ thuộc (nếu cần)
-RUN npm install
-
-# Xây dựng ứng dụng (nếu cần)
-# RUN npm run build
-
-# Sử dụng một server tĩnh để phục vụ các tệp tĩnh
-FROM nginx:alpine
-
-# Sao chép tệp đã xây dựng vào thư mục phục vụ của Nginx
-COPY --from=build /app /usr/share/nginx/html
-
-# Mở cổng cho Nginx
-EXPOSE 80
+cd ui
+# Serve index.html with any static server, e.g.:
+npx serve .
+# or use the Live Server extension in VS Code / WebStorm
 ```
 
-#### Tạo tệp docker-compose.yml
+Then open `http://localhost:3000` (or the port your server uses).
 
-Ở thư mục gốc của ứng dụng tạo file docker-compose.yml
+### Backend
 
 ```bash
-version: '3'
-services:
-  backend:
-    build:
-      context: ./backend
-    ports:
-      - "8080:8080"
-
-  frontend:
-    build:
-      context: ./frontend
-    ports:
-      - "80:80"
+cd server
+npm install
+npm start          # production
+# or
+npm run dev        # with auto-reload (Node >= 18 required)
 ```
 
-#### Xây dựng và Chạy Containers
+The WebSocket server listens on `ws://localhost:8080`.
 
-- Build Image, run: `docker-compose build --no-cache`
-- Build & run container, run: `docker-compose up --build`
+---
+
+## Docker
+
+### Build
+
+```bash
+docker-compose build --no-cache
+```
+
+### Run
+
+```bash
+docker-compose up --build
+```
+
+- Chat UI: http://localhost:80
+- WebSocket server: `ws://localhost:8080`
+
+### Environment variables (server)
+
+| Variable       | Default | Description                                |
+|----------------|---------|--------------------------------------------|
+| `PORT`         | `8080`  | WebSocket server port                      |
+| `HOST`         | `0.0.0.0` | Address to bind                          |
+| `MAX_CLIENTS`  | `50`    | Maximum simultaneous client connections    |
+
+### Note on WebSocket URL
+
+Inside the Docker network the UI cannot reach `localhost` from the container. The default `window.WS_URL` is `ws://localhost:8080`. Override it by setting `window.WS_URL` before the script loads or by using an ingress / reverse proxy.
+
+---
+
+## Testing
+
+```bash
+cd server
+npm install
+npm test        # run once
+# or
+npm run test:watch  # watch mode
+```
+
+---
+
+## Project Structure
+
+```
+.
+├── server/          # WebSocket server (Node.js)
+│   ├── app.js       # Server entry point
+│   ├── app.test.js  # Unit tests (vitest)
+│   ├── package.json
+│   ├── Dockerfile
+│   └── vitest.config.js
+├── ui/              # Frontend (plain HTML/CSS/JS)
+│   ├── index.html
+│   ├── styles.css
+│   ├── app.js
+│   └── Dockerfile
+├── docker-compose.yml
+└── README.md
+```
+
+---
 
 ## Deploy with Heroku
 
-`https://devcenter.heroku.com/articles/heroku-cli`
+See [Heroku CLI docs](https://devcenter.heroku.com/articles/heroku-cli) for setup. For a Dockerfile-based deploy:
+
+```bash
+heroku container:push web
+heroku container:release web
+```
