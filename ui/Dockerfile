@@ -1,17 +1,25 @@
-# Dockerfile cho Frontend
-FROM node:14 AS build
+# Dockerfile for the Chat UI (static files served by nginx)
+FROM node:22-slim AS build
 
-# Thiết lập thư mục làm việc
+# WebSocket URL baked into the served page (defaults to localhost for dev).
+# Override with: docker compose build --build-arg WS_URL=ws://chat.example.com
+ARG WS_URL=ws://localhost:8080
+
+# Set working directory
 WORKDIR /app
 
-# Sao chép mã nguồn vào container
+# Copy static assets
 COPY . .
 
-# Sử dụng một server tĩnh để phục vụ các tệp tĩnh
+# Inject the WS_URL override so the client connects to the right server
+# when the UI is served from a different origin than the WebSocket server.
+RUN sed -i "s|</head>|<script>window.WS_URL = '${WS_URL}';</script></head>|" /app/index.html
+
+# Use a lightweight static server
 FROM nginx:alpine
 
-# Sao chép tệp đã xây dựng vào thư mục phục vụ của Nginx
+# Copy static files into nginx's default serving directory
 COPY --from=build /app /usr/share/nginx/html
 
-# Mở cổng cho Nginx
+# Expose port 80
 EXPOSE 80
