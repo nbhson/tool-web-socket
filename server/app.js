@@ -1,13 +1,15 @@
 /**
  * WebSocket Server — Chat Demo
  * @description A simple broadcast WebSocket chat server with heartbeat,
- *              client limits, and graceful shutdown.
+ *              client limits, rate limiting, and graceful shutdown.
  * @module server/app
  */
 
 'use strict';
 
 const WebSocket = require('ws');
+
+// ── Configuration (all overridable via environment) ───────────────────────────
 
 /** @type {number} Server port */
 const PORT = process.env.PORT || 8080;
@@ -18,75 +20,112 @@ const HOST = process.env.HOST || '0.0.0.0';
 /** @type {number} Maximum number of simultaneous clients */
 const MAX_CLIENTS = process.env.MAX_CLIENTS ? parseInt(process.env.MAX_CLIENTS, 10) : 50;
 
-/** @type {number} Heartbeat interval in milliseconds (ping sent to each client) */
-const HEARTBEAT_INTERVAL = 30000;
+/**
+ * Heartbeat interval in milliseconds (ping sent to each client).
+ * Configure via HEARTBEAT_INTERVAL env var.
+ * @type {number}
+ */
+const HEARTBEAT_INTERVAL =
+  process.env.HEARTBEAT_INTERVAL
+    ? parseInt(process.env.HEARTBEAT_INTERVAL, 10)
+    : 30_000;
 
-/** @type {number} Time in ms after which an unresponsive client is considered dead */
-const HEARTBEAT_TIMEOUT = 35000;
+/** @type {number} Maximum incoming message size in bytes (default 4 KB). */
+const MAX_MESSAGE_SIZE =
+  process.env.MAX_MESSAGE_SIZE
+    ? parseInt(process.env.MAX_MESSAGE_SIZE, 10)
+    : 4 * 1024;
 
-/** @type {WebSocket.Server} */
-const wss = new WebSocket.Server({ host: HOST, port: PORT });
+/** @type {number} Maximum messages per client per rate-limit window. */
+const RATE_LIMIT_MAX =
+  process.env.RATE_LIMIT_MAX ? parseInt(process.env.RATE_LIMIT_MAX, 10) : 20;
+
+/** @type {number} Rate-limit window in milliseconds (default 10 s). */
+const RATE_LIMIT_WINDOW_MS =
+  process.env.RATE_LIMIT_WINDOW_MS
+    ? parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10)
+    : 10_000;
+
+// ── WebSocket server ───────────────────────────────────────────────────────────
+
+/**
+ * @type {WebSocket.Server}
+ * @description
+ *   maxPayload: closes connections that send frames larger than MAX_MESSAGE_SIZE
+ *               (close code 1009 — Message Too Big).
+ *               Protocol-level enforcement; application can add a tighter limit
+ *               on the message string length.
+ */
+const wss = new WebSocket.Server({
+  host: HOST,
+  port: PORT,
+  maxPayload: MAX_MESSAGE_SIZE,
+});
+
+// ── State ─────────────────────────────────────────────────────────────────────
 
 /** @type {Set<import('ws').WebSocket>} Active client sockets */
 const clients = new Set();
 
-/** @type {Map<import('ws').WebSocket, NodeJS.Timeout>} Heartbeat timers keyed by socket */
-const heartbeatTimers = new Map();
+/** @type {Map<import('ws').WebSocket, Array<number>>} Per-socket message timestamps for rate limiting */
+const messageTimestamps = new Map();
 
 /**
- * Starts a ping timer for a given socket.
- * If the client doesn't respond (pong) within HEARTBEAT_TIMEOUT,
- * its connection is terminated.
- * @param {import('ws').WebSocket} socket
+ * Heartbeat: pings each client and terminates those that miss a pong.
+ * Uses isAlive flag — set true on connection and on each pong response,
+ * set false before each ping. Clients that don't respond get terminated.
  */
-function startHeartbeat(socket) {
-  // Stop any existing timer for this socket before starting a new one.
-  const existing = heartbeatTimers.get(socket);
-  if (existing) clearInterval(existing);
-
-  const timer = setInterval(() => {
+const heartbeatTimer = setInterval(() => {
+  for (const socket of wss.clients) {
+    if (socket.isAlive === false) {
+      // Client failed to respond to the last ping — force close.
+      console.log('[Server] Client missed pong — terminating.');
+      socket.terminate();
+      continue;
+    }
+    socket.isAlive = false;
     if (socket.readyState === WebSocket.OPEN) {
       socket.ping();
-    } else {
-      clearInterval(timer);
-      heartbeatTimers.delete(socket);
     }
-  }, HEARTBEAT_INTERVAL);
-
-  heartbeatTimers.set(socket, timer);
-
-  // Reset the same timer on each pong — no recreation needed.
-  socket.on('pong', () => {
-    // Client is alive; the existing interval continues.
-  });
-}
-
-/**
- * Stops and clears all heartbeat timers.
- */
-function clearAllHeartbeats() {
-  for (const timer of heartbeatTimers.values()) {
-    clearInterval(timer);
   }
-  heartbeatTimers.clear();
-}
+}, HEARTBEAT_INTERVAL);
+if (heartbeatTimer.unref) heartbeatTimer.unref();
 
 /**
- * Removes a socket from tracking and cleans up its heartbeat.
+ * Cleans up all client state.
+ * Called on socket close; removes from tracking sets and clears rate-limit data.
  * @param {import('ws').WebSocket} socket
  */
 function removeClient(socket) {
   clients.delete(socket);
-  const timer = heartbeatTimers.get(socket);
-  if (timer) {
-    clearInterval(timer);
-    heartbeatTimers.delete(socket);
-  }
+  messageTimestamps.delete(socket);
   console.log(`[Server] Client disconnected. Active clients: ${clients.size}`);
 }
 
 /**
- * Broadcasts a message to all connected clients with OPEN state.
+ * Checks whether a client has exceeded the rate limit.
+ * Resets the window automatically on each call.
+ * @param {import('ws').WebSocket} socket
+ * @returns {boolean} true if the client is now rate-limited
+ */
+function isRateLimited(socket) {
+  const now = Date.now();
+  const window = RATE_LIMIT_WINDOW_MS;
+  const timestamps = (messageTimestamps.get(socket) ?? []).filter(
+    (t) => now - t < window
+  );
+  if (timestamps.length >= RATE_LIMIT_MAX) {
+    messageTimestamps.set(socket, timestamps);
+    return true;
+  }
+  timestamps.push(now);
+  messageTimestamps.set(socket, timestamps);
+  return false;
+}
+
+/**
+ * Broadcasts a message to all connected clients with OPEN state,
+ * excluding the optional sender socket.
  * @param {object} data - Serializable payload
  * @param {import('ws').WebSocket} [exclude] - Optional socket to skip
  */
@@ -99,29 +138,80 @@ function broadcast(data, exclude) {
   }
 }
 
+// ── Connection handler ─────────────────────────────────────────────────────────
+
 wss.on('connection', (socket, req) => {
+  // ── Capacity check ──────────────────────────────────────────────────────────
   if (clients.size >= MAX_CLIENTS) {
-    console.warn(`[Server] Connection rejected — max clients (${MAX_CLIENTS}) reached.`);
-    socket.send(JSON.stringify({ type: 'error', message: 'Server is at full capacity. Try again later.' }));
-    socket.close();
+    console.warn(
+      `[Server] Connection rejected — max clients (${MAX_CLIENTS}) reached.`
+    );
+    socket.send(
+      JSON.stringify({
+        type: 'error',
+        message: 'Server is at full capacity. Try again later.',
+      })
+    );
+    socket.close(1013, 'Server full');
     return;
   }
 
   const clientIp = req.socket.remoteAddress || 'unknown';
   clients.add(socket);
-  console.log(`[Server] Client connected from ${clientIp}. Active clients: ${clients.size}`);
+  console.log(
+    `[Server] Client connected from ${clientIp}. Active clients: ${clients.size}`
+  );
 
-  // Start heartbeat for this client
-  startHeartbeat(socket);
+  // Heartbeat: initialise isAlive flag
+  socket.isAlive = true;
 
+  socket.on('pong', () => {
+    // Client responded to ping — mark alive for the next heartbeat round.
+    socket.isAlive = true;
+  });
+
+  // ── Message handler ─────────────────────────────────────────────────────────
   socket.on('message', (raw) => {
+    // Rate-limit check before any decoding to reject floods early.
+    if (isRateLimited(socket)) {
+      console.warn(`[Server] Rate limit exceeded for ${clientIp}.`);
+      socket.send(
+        JSON.stringify({
+          type: 'error',
+          message: 'Rate limit exceeded. Please slow down.',
+        })
+      );
+      socket.close(1008, 'Rate limit exceeded');
+      return;
+    }
+
     /** @type {string} */
     let messageStr;
     try {
-      messageStr = Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+      // Handle Buffer (Node ws) or string raw payloads.
+      messageStr = Buffer.isBuffer(raw)
+        ? raw.toString('utf8')
+        : String(raw);
     } catch (err) {
       console.error('[Server] Failed to decode message:', err);
-      socket.send(JSON.stringify({ type: 'error', message: 'Failed to decode message.' }));
+      socket.send(
+        JSON.stringify({
+          type: 'error',
+          message: 'Failed to decode message.',
+        })
+      );
+      return;
+    }
+
+    // Protocol-level maxPayload already closes oversized frames at the ws layer
+    // (close 1009). Application-level length check as a secondary defence.
+    if (messageStr.length > MAX_MESSAGE_SIZE) {
+      socket.send(
+        JSON.stringify({
+          type: 'error',
+          message: `Message exceeds maximum length of ${MAX_MESSAGE_SIZE} bytes.`,
+        })
+      );
       return;
     }
 
@@ -130,7 +220,12 @@ wss.on('connection', (socket, req) => {
       parsed = JSON.parse(messageStr);
     } catch {
       console.error('[Server] Invalid JSON received:', messageStr);
-      socket.send(JSON.stringify({ type: 'error', message: 'Invalid JSON format.' }));
+      socket.send(
+        JSON.stringify({
+          type: 'error',
+          message: 'Invalid JSON format.',
+        })
+      );
       return;
     }
 
@@ -139,36 +234,49 @@ wss.on('connection', (socket, req) => {
     // Handle join messages
     if (type === 'join') {
       console.log(`[Server] User joined: ${ip} (${uid})`);
-      broadcast({ type: 'system', message: `User ${ip} joined the chat.`, timestamp: Date.now() }, socket);
+      broadcast(
+        {
+          type: 'system',
+          message: `User ${ip} joined the chat.`,
+          timestamp: Date.now(),
+        },
+        socket
+      );
       return;
     }
 
     // Handle regular chat messages
-    if (!message || typeof message !== 'string') {
-      socket.send(JSON.stringify({ type: 'error', message: 'Message field is required.' }));
+    // Validate that message is a non-empty string.
+    if (typeof message !== 'string' || message.trim().length === 0) {
+      socket.send(
+        JSON.stringify({
+          type: 'error',
+          message: 'Message field is required.',
+        })
+      );
       return;
     }
 
-    console.log(`[Server] Broadcast from ${ip} (${uid}): ${message}`);
-    broadcast({
-      type: 'chat',
-      ip,
-      uid,
-      message: message.trim(),
-      timestamp: Date.now(),
-    }, socket);
+    console.log(`[Server] Broadcast from ${ip} (${uid}): ${message.trim()}`);
+    broadcast(
+      {
+        type: 'chat',
+        ip,
+        uid,
+        message: message.trim(),
+        timestamp: Date.now(),
+      },
+      socket
+    );
   });
 
   socket.on('error', (err) => {
     console.error(`[Server] Socket error for ${clientIp}:`, err.message);
+    // Client is removed from tracking when 'close' fires (guaranteed by ws spec).
   });
 
   socket.on('close', () => {
     removeClient(socket);
-  });
-
-  socket.on('pong', () => {
-    // Heartbeat response received — handled in startHeartbeat
   });
 });
 
@@ -176,24 +284,34 @@ wss.on('error', (err) => {
   console.error('[Server] WebSocket server error:', err);
 });
 
+// ── Graceful shutdown ───────────────────────────────────────────────────────────
+
 /**
  * Gracefully shuts down the server.
- * Closes all client connections and stops accepting new ones.
+ * Stops the heartbeat loop, notifies all clients, and closes the server.
  * @param {string} signal
  */
 function gracefulShutdown(signal) {
-  console.log(`\n[Server] Received ${signal}. Starting graceful shutdown...`);
-  clearAllHeartbeats();
+  console.log(
+    `\n[Server] Received ${signal}. Starting graceful shutdown...`
+  );
+  clearInterval(heartbeatTimer);
 
   for (const client of clients) {
     try {
-      client.send(JSON.stringify({ type: 'system', message: 'Server is shutting down.' }));
+      client.send(
+        JSON.stringify({
+          type: 'system',
+          message: 'Server is shutting down.',
+        })
+      );
       client.close(1001, 'Server shutdown');
-    } catch (err) {
-      // Ignore errors during cleanup
+    } catch {
+      // Ignore errors during cleanup — client may already be gone.
     }
   }
   clients.clear();
+  messageTimestamps.clear();
 
   wss.close((err) => {
     if (err) {
@@ -208,5 +326,9 @@ function gracefulShutdown(signal) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// ── Startup ────────────────────────────────────────────────────────────────────
+
 console.log(`[Server] WebSocket server running on ws://${HOST}:${PORT}`);
-console.log(`[Server] Max clients: ${MAX_CLIENTS} | Heartbeat: ${HEARTBEAT_INTERVAL}ms`);
+console.log(
+  `[Server] Max clients: ${MAX_CLIENTS} | Heartbeat: ${HEARTBEAT_INTERVAL}ms | Max message: ${MAX_MESSAGE_SIZE}B`
+);
