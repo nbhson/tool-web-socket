@@ -6,9 +6,27 @@ services:
       - PORT=8080
       - HOST=0.0.0.0
       - MAX_CLIENTS=${MAX_CLIENTS:-50}
+      - MAX_CLIENTS_PER_IP=${MAX_CLIENTS_PER_IP:-10}
+      - ALLOWED_ORIGIN=${ALLOWED_ORIGIN:-}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30000}
+      - MAX_MESSAGE_SIZE=${MAX_MESSAGE_SIZE:-4096}
+      - RATE_LIMIT_MAX=${RATE_LIMIT_MAX:-20}
+      - RATE_LIMIT_WINDOW_MS=${RATE_LIMIT_WINDOW_MS:-10000}
     ports:
       - "8080:8080"
     restart: unless-stopped
+    healthcheck:
+      # TCP probe (node:slim has no curl/wget)
+      test: ["CMD", "node", "-e", "const n=require('net');const s=n.connect(8080,'127.0.0.1');s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),3000)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
 
   frontend:
     build:
@@ -16,5 +34,16 @@ services:
       args:
         WS_URL: ${WS_URL:-ws://localhost:8080}
     ports:
-      - "80:80"
+      - "80:8080"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M

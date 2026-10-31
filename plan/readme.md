@@ -35,11 +35,30 @@ WebSocket server (Node) + UI, docker-compose, vitest.
 
 ### P1 (chất lượng)
 - [x] Bổ sung tests: heartbeat/ping-pong, nhiều client, malformed message
-- [ ] Hardening docker-compose (non-root user, healthcheck)
+- [x] Hardening docker-compose (non-root user, healthcheck, resource limits)
 
 ### P2
 - [ ] CI workflow
-- [ ] README sync
+- [x] README sync
+
+## Log — nâng cấp toàn diện (31-10-2026)
+### Commit 1: chore (deps + lint)
+- ws 8.18.0 → 8.22.1; vitest 2.1.9 → 5.0.5 (khắc phục 6 vulnerabilities vite/esbuild/mocker)
+- ESLint 9 flat config (eslint.config.mjs) + scripts lint/lint:fix; sửa unused vars
+- Audit còn lại: minimatch (dev-only, qua eslint, no fix available)
+
+### Commit 2: feat (hardening round 2)
+- ALLOWED_ORIGIN opt-in: từ chối Origin lạ (close 1008)
+- MAX_CLIENTS_PER_IP (default 10): chặn flood kết nối một IP (close 1013)
+- Coerce ip/uid non-string → '' trước khi broadcast (type-confusion)
+- security.test.js: 5 test mới
+
+### Commit 3: chore (docker + docs)
+- Compose: healthcheck cả 2 service, CPU/memory limits, passthrough env mới
+- server Dockerfile: USER node; ui Dockerfile: nginx-unprivileged (8080 nội bộ)
+- .dockerignore cho cả hai context; README sync env/features/structure
+
+### Kết quả: 18/18 test pass, lint sạch. Docker build chưa kiểm chứng (daemon off).
 
 ## Self-review log
 - _0:44_ Audit lần 1: 6/6 pass.

@@ -15,11 +15,11 @@ COPY . .
 # when the UI is served from a different origin than the WebSocket server.
 RUN sed -i "s|</head>|<script>window.WS_URL = '${WS_URL}';</script></head>|" /app/index.html
 
-# Use a lightweight static server
-FROM nginx:alpine
+# Use a lightweight, non-root static server (listens on 8080)
+FROM nginxinc/nginx-unprivileged:alpine
 
 # Copy static files into nginx's default serving directory
 COPY --from=build /app /usr/share/nginx/html
 
-# Expose port 80
-EXPOSE 80
+# Expose the unprivileged HTTP port
+EXPOSE 8080
