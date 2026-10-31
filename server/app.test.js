@@ -7,9 +7,6 @@ const PORT = 8081;
 /** @type {import('child_process').ChildProcess | null} */
 let serverProcess;
 
-/** @type {WebSocket | null} */
-let _socketHolder = null;
-
 /**
  * Starts the server process and waits until it is truly ready to accept connections.
  * @returns {Promise<import('child_process').ChildProcess>}
@@ -84,7 +81,6 @@ afterAll(async () => {
 function connect() {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${PORT}`);
-    _socketHolder = socket;
 
     const timer = setTimeout(() => {
       socket.close();

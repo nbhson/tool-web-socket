@@ -6,7 +6,7 @@
  * with app.test.js (port 8081).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import WebSocket from 'ws';
 import net from 'node:net';
 import crypto from 'node:crypto';

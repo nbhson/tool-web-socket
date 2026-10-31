@@ -7,7 +7,9 @@
     "start": "node app.js",
     "dev": "node --watch app.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "keywords": [
     "websocket",
@@ -18,9 +20,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.22.1"
   },
   "devDependencies": {
-    "vitest": "^2.1.9"
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "eslint-plugin-n": "^18.5.0",
+    "globals": "^17.13.0",
+    "vitest": "^5.0.5"
   }
 }
