@@ -46,6 +46,23 @@ const RATE_LIMIT_WINDOW_MS =
     ? parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10)
     : 10_000;
 
+/**
+ * Maximum simultaneous connections allowed from a single IP address.
+ * Mitigates connection-flood DoS from one host exhausting MAX_CLIENTS.
+ * @type {number}
+ */
+const MAX_CLIENTS_PER_IP =
+  process.env.MAX_CLIENTS_PER_IP
+    ? parseInt(process.env.MAX_CLIENTS_PER_IP, 10)
+    : 10;
+
+/**
+ * If set (e.g. "https://chat.example.com"), only WebSocket handshakes with
+ * a matching Origin header are accepted. Empty (default) allows all origins.
+ * @type {string}
+ */
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
+
 // ── WebSocket server ───────────────────────────────────────────────────────────
 
 /**
@@ -138,6 +155,20 @@ function broadcast(data, exclude) {
   }
 }
 
+/**
+ * Counts active connections originating from a single IP address.
+ * Uses the server-observed remote address stored on each socket.
+ * @param {string} ip
+ * @returns {number}
+ */
+function countConnectionsFromIp(ip) {
+  let count = 0;
+  for (const client of clients) {
+    if (client.remoteAddress === ip) count++;
+  }
+  return count;
+}
+
 // ── Connection handler ─────────────────────────────────────────────────────────
 
 wss.on('connection', (socket, req) => {
@@ -157,6 +188,26 @@ wss.on('connection', (socket, req) => {
   }
 
   const clientIp = req.socket.remoteAddress || 'unknown';
+  socket.remoteAddress = clientIp;
+
+  // ── Origin check (opt-in via ALLOWED_ORIGIN) ────────────────────────────────
+  if (ALLOWED_ORIGIN && req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) {
+    console.warn(
+      `[Server] Connection rejected — origin not allowed: ${req.headers.origin}`
+    );
+    socket.close(1008, 'Origin not allowed');
+    return;
+  }
+
+  // ── Per-IP connection cap ───────────────────────────────────────────────────
+  if (countConnectionsFromIp(clientIp) >= MAX_CLIENTS_PER_IP) {
+    console.warn(
+      `[Server] Connection rejected — per-IP limit (${MAX_CLIENTS_PER_IP}) reached for ${clientIp}.`
+    );
+    socket.close(1013, 'Too many connections');
+    return;
+  }
+
   clients.add(socket);
   console.log(
     `[Server] Client connected from ${clientIp}. Active clients: ${clients.size}`
@@ -231,13 +282,19 @@ wss.on('connection', (socket, req) => {
 
     const { ip, uid, message, type } = parsed;
 
+    // ── Metadata type validation (defence against type-confusion payloads) ────
+    // ip/uid are client-supplied display metadata; coerce anything that is not
+    // a plain string to an empty string before logging or broadcasting.
+    const safeIp = typeof ip === 'string' ? ip : '';
+    const safeUid = typeof uid === 'string' ? uid : '';
+
     // Handle join messages
     if (type === 'join') {
-      console.log(`[Server] User joined: ${ip} (${uid})`);
+      console.log(`[Server] User joined: ${safeIp} (${safeUid})`);
       broadcast(
         {
           type: 'system',
-          message: `User ${ip} joined the chat.`,
+          message: `User ${safeIp} joined the chat.`,
           timestamp: Date.now(),
         },
         socket
@@ -257,12 +314,12 @@ wss.on('connection', (socket, req) => {
       return;
     }
 
-    console.log(`[Server] Broadcast from ${ip} (${uid}): ${message.trim()}`);
+    console.log(`[Server] Broadcast from ${safeIp} (${safeUid}): ${message.trim()}`);
     broadcast(
       {
         type: 'chat',
-        ip,
-        uid,
+        ip: safeIp,
+        uid: safeUid,
         message: message.trim(),
         timestamp: Date.now(),
       },
@@ -330,5 +387,5 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 console.log(`[Server] WebSocket server running on ws://${HOST}:${PORT}`);
 console.log(
-  `[Server] Max clients: ${MAX_CLIENTS} | Heartbeat: ${HEARTBEAT_INTERVAL}ms | Max message: ${MAX_MESSAGE_SIZE}B`
+  `[Server] Max clients: ${MAX_CLIENTS} (per IP: ${MAX_CLIENTS_PER_IP}) | Heartbeat: ${HEARTBEAT_INTERVAL}ms | Max message: ${MAX_MESSAGE_SIZE}B | Origin check: ${ALLOWED_ORIGIN || 'off'}`
 );
