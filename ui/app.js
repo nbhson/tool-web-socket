@@ -235,7 +235,7 @@ function scheduleReconnect() {
     return;
   }
 
-  setConnectionStatus('reconnecting');
+  setConnectionStatus('reconnecting', `Đang kết nối lại... (lần ${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})`);
   const delay = getNextDelay();
   reconnectAttempts++;
 
@@ -308,6 +308,10 @@ function connect() {
 
     if (errorMsg) {
       displayMessage({ type: 'error', message: errorMsg });
+      // Rate limit: nổi bật bằng banner để người dùng không bỏ lỡ.
+      if (/rate limit/i.test(errorMsg)) {
+        showError('Bạn đã gửi tin nhắn quá nhanh — kết nối sẽ được thử lại sau ít phút.');
+      }
       return;
     }
 
@@ -330,11 +334,35 @@ function connect() {
   // ── close ──────────────────────────────────────────────────────────────────
   socket.addEventListener('close', (event) => {
     console.log(`[Client] WebSocket closed (code: ${event.code}).`);
+
+    // Explain non-obvious close codes to the user.
+    if (event.code === 1008) {
+      // Policy violation: rate limit or origin rejection.
+      setConnectionStatus('disconnected', 'Bị từ chối (vi phạm giới hạn)');
+      // Don't overwrite a more specific banner (e.g. the rate-limit one).
+      if (errorBanner?.hasAttribute('hidden')) {
+        showError('Kết nối bị server từ chối (gửi quá nhanh hoặc origin không hợp lệ). Đang thử kết nối lại...');
+      }
+      enableInput(false);
+      scheduleReconnect();
+      return;
+    }
+    if (event.code === 1013) {
+      // Server full / overloaded.
+      setConnectionStatus('disconnected', 'Server đã đầy');
+      showError('Server đang quá tải — sẽ thử kết nối lại tự động.');
+      enableInput(false);
+      scheduleReconnect();
+      return;
+    }
+
     setConnectionStatus('disconnected');
     enableInput(false);
 
-    if (!intentionallyClosed && event.code !== 1001) {
-      // 1001 = going away (server shutdown) — don't auto-reconnect for that
+    if (!intentionallyClosed) {
+      // Auto-reconnect for every close reason except the client's own choice.
+      // 1001 (server going away) also reconnects — it usually means the server
+      // is restarting (deploy / crash) and will be back shortly.
       scheduleReconnect();
     }
   });
