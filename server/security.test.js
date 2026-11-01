@@ -1,7 +1,7 @@
 /**
  * Tests for the second hardening round:
- * - Origin check (ALLOWED_ORIGIN)
- * - Per-IP connection cap (MAX_CLIENTS_PER_IP)
+ * - Origin check (ALLOWED_ORIGIN) — enforced at the HTTP upgrade level (403)
+ * - Per-IP connection cap (MAX_CLIENTS_PER_IP) — enforced at upgrade level (429)
  * - Metadata type validation (non-string ip/uid must not crash / leak objects)
  *
  * Uses its own server instances on ports 8085/8086/8087.
@@ -71,6 +71,23 @@ function waitClose(socket) {
   });
 }
 
+/**
+ * Resolves with the HTTP status code that rejected the handshake.
+ * When a server rejects an upgrade, the ws client emits
+ * `error: "Unexpected server response: <status>"`.
+ * @param {WebSocket} socket
+ * @returns {Promise<number|null>}
+ */
+function waitRejectedStatus(socket) {
+  return new Promise((resolve) => {
+    socket.on('error', (err) => {
+      const match = /Unexpected server response: (\d+)/.exec(err.message);
+      resolve(match ? Number(match[1]) : null);
+    });
+    socket.on('open', () => resolve(null)); // handshake unexpectedly succeeded
+  });
+}
+
 describe('Hardening round 2: origin check', () => {
   let proc;
 
@@ -89,12 +106,19 @@ describe('Hardening round 2: origin check', () => {
     socket.close();
   });
 
-  it('rejects a connection with a foreign Origin (close 1008)', async () => {
+  it('accepts a handshake without an Origin header (originless allowed)', async () => {
+    // Preserved behavior: only a *mismatched* Origin is rejected.
+    const socket = await connect(ORIGIN_PORT, undefined);
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    socket.close();
+  });
+
+  it('rejects a handshake with a foreign Origin (HTTP 403 before WS)', async () => {
     const socket = new WebSocket(`ws://127.0.0.1:${ORIGIN_PORT}`, {
       headers: { Origin: 'http://evil.example' },
     });
-    const code = await waitClose(socket);
-    expect(code).toBe(1008);
+    const status = await waitRejectedStatus(socket);
+    expect(status).toBe(403);
   });
 
   it('rejects a forged chat message with non-string ip/uid (coerced, no crash)', async () => {
@@ -127,13 +151,13 @@ describe('Hardening round 2: per-IP connection cap', () => {
     await new Promise((r) => setTimeout(r, 200));
   });
 
-  it('rejects connections beyond MAX_CLIENTS_PER_IP (close 1013)', async () => {
+  it('rejects handshakes beyond MAX_CLIENTS_PER_IP (HTTP 429 before WS)', async () => {
     const a = await connect(PERIP_PORT);
     const b = await connect(PERIP_PORT);
 
     const third = new WebSocket(`ws://127.0.0.1:${PERIP_PORT}`);
-    const code = await waitClose(third);
-    expect(code).toBe(1013);
+    const status = await waitRejectedStatus(third);
+    expect(status).toBe(429);
 
     a.close();
     b.close();

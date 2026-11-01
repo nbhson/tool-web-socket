@@ -7,7 +7,9 @@
 
 'use strict';
 
+const http = require('node:http');
 const WebSocket = require('ws');
+const { MESSAGE_TYPES } = require('./protocol');
 
 // ── Configuration (all overridable via environment) ───────────────────────────
 
@@ -66,16 +68,24 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '';
 // ── WebSocket server ───────────────────────────────────────────────────────────
 
 /**
+ * HTTP server hosting the WebSocket endpoint.
+ * Owns the listening socket so the `upgrade` event can be handled manually
+ * (the modern replacement for the legacy `verifyClient` API, removed in ws v9).
+ * @type {import('node:http').Server}
+ */
+const server = http.createServer(handleHttpRequest);
+
+/**
  * @type {WebSocket.Server}
  * @description
- *   maxPayload: closes connections that send frames larger than MAX_MESSAGE_SIZE
- *               (close code 1009 — Message Too Big).
- *               Protocol-level enforcement; application can add a tighter limit
- *               on the message string length.
+ *   noServer:     handshakes are handled via the `upgrade` listener on `server`.
+ *   maxPayload:   closes connections that send frames larger than MAX_MESSAGE_SIZE
+ *                 (close code 1009 — Message Too Big).
+ *                 Protocol-level enforcement; application can add a tighter limit
+ *                 on the message string length.
  */
 const wss = new WebSocket.Server({
-  host: HOST,
-  port: PORT,
+  noServer: true,
   maxPayload: MAX_MESSAGE_SIZE,
 });
 
@@ -169,6 +179,85 @@ function countConnectionsFromIp(ip) {
   return count;
 }
 
+/**
+ * Aggregated server statistics (no per-IP data — avoid information leaks).
+ * @returns {object}
+ */
+function getStats() {
+  return {
+    clients: wss.clients.size,
+    maxClients: MAX_CLIENTS,
+    maxClientsPerIp: MAX_CLIENTS_PER_IP,
+    rateLimit: { max: RATE_LIMIT_MAX, windowMs: RATE_LIMIT_WINDOW_MS },
+    uptimeSeconds: Math.floor(process.uptime()),
+  };
+}
+
+/**
+ * Handles plain HTTP requests: exposes a lightweight /stats endpoint.
+ * @param {import('node:http').IncomingMessage} req
+ * @param {import('node:http').ServerResponse} res
+ */
+function handleHttpRequest(req, res) {
+  if (req.method === 'GET' && req.url === '/stats') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(getStats()));
+    return;
+  }
+  res.writeHead(404, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Not found' }));
+}
+
+/**
+ * Rejects a WebSocket handshake at the HTTP level (before any WS framing).
+ * Standard ws v9 pattern replacing the legacy `verifyClient` API.
+ * @param {import('node:net').Socket} socket - The raw TCP socket of the handshake
+ * @param {number} statusCode - HTTP status to respond with (403 / 429)
+ */
+function rejectUpgrade(socket, statusCode) {
+  const statusText = http.STATUS_CODES[statusCode] || 'Rejected';
+  socket.write(
+    `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
+      'Connection: close\r\n' +
+      'Content-Length: 0\r\n' +
+      '\r\n'
+  );
+  socket.destroy();
+}
+
+// ── Handshake (upgrade) handler ────────────────────────────────────────────────
+
+server.on('upgrade', (req, socket, head) => {
+  // ── Origin check (opt-in via ALLOWED_ORIGIN) ────────────────────────────────
+  // Same policy as before (originless handshakes are allowed), but rejected at
+  // the HTTP level: client sees 403 instead of a post-handshake close 1008.
+  if (
+    ALLOWED_ORIGIN &&
+    req.headers.origin &&
+    req.headers.origin !== ALLOWED_ORIGIN
+  ) {
+    console.warn(
+      `[Server] Handshake rejected — origin not allowed: ${req.headers.origin}`
+    );
+    rejectUpgrade(socket, 403);
+    return;
+  }
+
+  // ── Per-IP connection cap (rejected before any WS resources are allocated) ──
+  const clientIp = req.socket.remoteAddress || 'unknown';
+  if (countConnectionsFromIp(clientIp) >= MAX_CLIENTS_PER_IP) {
+    console.warn(
+      `[Server] Handshake rejected — per-IP limit (${MAX_CLIENTS_PER_IP}) reached for ${clientIp}.`
+    );
+    rejectUpgrade(socket, 429);
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
+
 // ── Connection handler ─────────────────────────────────────────────────────────
 
 wss.on('connection', (socket, req) => {
@@ -190,23 +279,9 @@ wss.on('connection', (socket, req) => {
   const clientIp = req.socket.remoteAddress || 'unknown';
   socket.remoteAddress = clientIp;
 
-  // ── Origin check (opt-in via ALLOWED_ORIGIN) ────────────────────────────────
-  if (ALLOWED_ORIGIN && req.headers.origin && req.headers.origin !== ALLOWED_ORIGIN) {
-    console.warn(
-      `[Server] Connection rejected — origin not allowed: ${req.headers.origin}`
-    );
-    socket.close(1008, 'Origin not allowed');
-    return;
-  }
-
-  // ── Per-IP connection cap ───────────────────────────────────────────────────
-  if (countConnectionsFromIp(clientIp) >= MAX_CLIENTS_PER_IP) {
-    console.warn(
-      `[Server] Connection rejected — per-IP limit (${MAX_CLIENTS_PER_IP}) reached for ${clientIp}.`
-    );
-    socket.close(1013, 'Too many connections');
-    return;
-  }
+  // NOTE: Origin check and per-IP connection cap are enforced in the
+  // `server.on('upgrade')` listener (HTTP 403 / 429) before the handshake
+  // completes — see above.
 
   clients.add(socket);
   console.log(
@@ -281,6 +356,14 @@ wss.on('connection', (socket, req) => {
     }
 
     const { ip, uid, message, type } = parsed;
+
+    // ── Protocol-level ping → pong (application-layer liveness check) ─────────
+    if (type === MESSAGE_TYPES.PING) {
+      socket.send(
+        JSON.stringify({ type: MESSAGE_TYPES.PONG, timestamp: Date.now() })
+      );
+      return;
+    }
 
     // ── Metadata type validation (defence against type-confusion payloads) ────
     // ip/uid are client-supplied display metadata; coerce anything that is not
@@ -370,7 +453,8 @@ function gracefulShutdown(signal) {
   clients.clear();
   messageTimestamps.clear();
 
-  wss.close((err) => {
+  wss.close();
+  server.close((err) => {
     if (err) {
       console.error('[Server] Error during close:', err);
       process.exit(1);
@@ -385,7 +469,9 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // ── Startup ────────────────────────────────────────────────────────────────────
 
-console.log(`[Server] WebSocket server running on ws://${HOST}:${PORT}`);
-console.log(
-  `[Server] Max clients: ${MAX_CLIENTS} (per IP: ${MAX_CLIENTS_PER_IP}) | Heartbeat: ${HEARTBEAT_INTERVAL}ms | Max message: ${MAX_MESSAGE_SIZE}B | Origin check: ${ALLOWED_ORIGIN || 'off'}`
-);
+server.listen(PORT, HOST, () => {
+  console.log(`[Server] WebSocket server running on ws://${HOST}:${PORT}`);
+  console.log(
+    `[Server] Max clients: ${MAX_CLIENTS} (per IP: ${MAX_CLIENTS_PER_IP}) | Heartbeat: ${HEARTBEAT_INTERVAL}ms | Max message: ${MAX_MESSAGE_SIZE}B | Origin check: ${ALLOWED_ORIGIN || 'off'} | Stats: http://${HOST}:${PORT}/stats`
+  );
+});
